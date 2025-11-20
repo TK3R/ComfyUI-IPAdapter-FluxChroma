@@ -131,7 +131,7 @@ class InstantXFluxIPAdapterModelAdvanced:
         image_prompt_embeds = self.image_proj_model(clip_image_embeds)
         return image_prompt_embeds
 
-class IPAdapterFluxLoaderAdvanced:
+class IPAdapterFluxChromaLoaderAdvanced:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -150,7 +150,7 @@ class IPAdapterFluxLoaderAdvanced:
         model = InstantXFluxIPAdapterModelAdvanced(image_encoder_path=clip_vision, ip_ckpt=ipadapter, device=provider, num_tokens=128)
         return (model,)
 
-class ApplyIPAdapterFluxAdvanced:
+class ApplyIPAdapterFluxChromaAdvanced:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -273,12 +273,12 @@ class ApplyIPAdapterFluxAdvanced:
         return (bi,)
 
 NODE_CLASS_MAPPINGS = {
-    "IPAdapterFluxLoaderAdvanced": IPAdapterFluxLoaderAdvanced,
-    "ApplyIPAdapterFluxAdvanced": ApplyIPAdapterFluxAdvanced,
+    "IPAdapterFluxChromaLoaderAdvanced": IPAdapterFluxChromaLoaderAdvanced,
+    "ApplyIPAdapterFluxChromaAdvanced": ApplyIPAdapterFluxChromaAdvanced,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "IPAdapterFluxLoaderAdvanced": "Load IPAdapter Flux Model (Advanced)",
-    "ApplyIPAdapterFluxAdvanced": "Apply IPAdapter Flux Model (Advanced)",
+    "IPAdapterFluxChromaLoaderAdvanced": "Load IPAdapter Flux Model Advanced (Chroma)",
+    "ApplyIPAdapterFluxChromaAdvanced": "Apply IPAdapter Flux Model Advanced (Chroma)",
 }
 

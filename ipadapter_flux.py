@@ -123,7 +123,7 @@ class InstantXFluxIPAdapterModel:
         image_prompt_embeds = self.image_proj_model(clip_image_embeds)
         return image_prompt_embeds
 
-class IPAdapterFluxLoader:
+class IPAdapterFluxChromaLoader:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -142,7 +142,7 @@ class IPAdapterFluxLoader:
         model = InstantXFluxIPAdapterModel(image_encoder_path=clip_vision, ip_ckpt=ipadapter, device=provider, num_tokens=128)
         return (model,)
 
-class ApplyIPAdapterFlux:
+class ApplyIPAdapterFluxChroma:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -254,11 +254,11 @@ class ApplyIPAdapterFlux:
         return (bi,)
 
 NODE_CLASS_MAPPINGS = {
-    "IPAdapterFluxLoader": IPAdapterFluxLoader,
-    "ApplyIPAdapterFlux": ApplyIPAdapterFlux,
+    "IPAdapterFluxChromaLoader": IPAdapterFluxChromaLoader,
+    "ApplyIPAdapterFluxChroma": ApplyIPAdapterFluxChroma,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "IPAdapterFluxLoader": "Load IPAdapter Flux Model",
-    "ApplyIPAdapterFlux": "Apply IPAdapter Flux Model",
+    "IPAdapterFluxChromaLoader": "Load IPAdapter Flux Model (Chroma)",
+    "ApplyIPAdapterFluxChroma": "Apply IPAdapter Flux Model (Chroma)",
 }

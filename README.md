@@ -1,4 +1,4 @@
-# ComfyUI-IPAdapter-Flux
+# ComfyUI-IPAdapter-FluxChroma
 
 ## 🚀 FluxChroma Fork
 
@@ -31,7 +31,20 @@
 
 ./documentation folder includes detailed description of the bigger changes
 
+### INSTALLATION
+IF YOU HAVE THE ORIGINAL ComfyUI-IPAdapter-Flux REMOVE IT FIRST
+
+Installation is the same as the original
+
+1. Navigate to `ComfyUI/custom_nodes`.  
+2. Clone this repository, and the path should be `ComfyUI/custom_nodes/comfyui-ipadapter-fluxchroma/*`, where `*` represents all the files in this repository.  
+3. Go to `ComfyUI/custom_nodes/comfyui-ipadapter-fluxchroma/` and run `pip install -r requirements.txt`.  
+4. Download [ipadapter weights](https://huggingface.co/InstantX/FLUX.1-dev-IP-Adapter) to `ComfyUI/models/ipadapter-flux`. You can also download [google/siglip-so400m-patch14-384](https://huggingface.co/google/siglip-so400m-patch14-384) to `ComfyUI/models/clip_vision` or use huggingface cache by default. 
+5. Run ComfyUI after installation is complete! 
+
+### ORIGINAL README BELOW
 ---
+# ComfyUI-IPAdapter-Flux
 
 [阅读中文版](./README_zh.md)
 

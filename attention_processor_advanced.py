@@ -34,15 +34,10 @@ class IPAFluxAttnProcessor2_0Advanced(nn.Module):
         self.__class__._instances.add(self)
     
     def clear_memory(self):
+        """Clear temporary caches but keep model parameters intact"""
         self.seen_timesteps.clear()
-        if hasattr(self, 'to_k_ip'):
-            del self.to_k_ip
-        if hasattr(self, 'to_v_ip'):
-            del self.to_v_ip
-        if hasattr(self, 'norm_added_k'):
-            del self.norm_added_k
-        if hasattr(self, 'norm_added_v'):
-            del self.norm_added_v
+        # Don't delete model parameters (to_k_ip, to_v_ip, norm_added_k, norm_added_v)
+        # as they are nn.Module components needed for forward passes
 
     @classmethod
     def reset_all_instances(cls):
@@ -64,7 +59,8 @@ class IPAFluxAttnProcessor2_0Advanced(nn.Module):
     def __del__(self):
         self.clear_memory()
         # Remove this instance from the set when it's deleted
-        self.__class__._instances.remove(self)
+        # Use discard() instead of remove() to avoid KeyError if already removed
+        self.__class__._instances.discard(self)
             
     def __call__(
         self,

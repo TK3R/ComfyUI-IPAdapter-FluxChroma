@@ -6,6 +6,14 @@ from types import MethodType
 
 def FluxUpdateModules(bi, ip_attn_procs, image_emb, is_patched):
     flux_model = bi.model
+    
+    # Check if this is ChromaRadiance - it's incompatible with IPAdapter due to NeRF architecture
+    model_type = type(flux_model.diffusion_model).__name__
+    if model_type == "ChromaRadiance":
+        print("WARNING: ChromaRadiance models are not compatible with IPAdapter due to their NeRF-based architecture.")
+        print("IPAdapter will be disabled for this model. The model will run normally without IPAdapter effects.")
+        return  # Skip patching for ChromaRadiance
+    
     bi.add_object_patch(f"diffusion_model.forward_orig", MethodType(forward_orig_ipa, flux_model.diffusion_model))
     for i, original in enumerate(flux_model.diffusion_model.double_blocks):
         patch_name = f"double_blocks.{i}"
@@ -59,18 +67,40 @@ def forward_orig_ipa(
     attn_mask: Tensor = None,
 ) -> Tensor:
     patches_replace = transformer_options.get("patches_replace", {})
-    if img.ndim != 3 or txt.ndim != 3:
-        raise ValueError("Input img and txt tensors must have 3 dimensions.")
-
+    
     # running on sequences img
     img = self.img_in(img)
-    vec = self.time_in(timestep_embedding(timesteps, 256).to(img.dtype))
-    if self.params.guidance_embed:
+    
+    # Check if this is a Chroma model (has distilled_guidance_layer instead of time_in)
+    is_chroma = hasattr(self, 'distilled_guidance_layer') and not hasattr(self, 'time_in')
+    
+    if is_chroma:
+        # Chroma model: use distilled guidance layer
+        mod_index_length = 344
+        distill_timestep = timestep_embedding(timesteps.detach().clone(), 16).to(img.device, img.dtype)
+        
         if guidance is None:
-            raise ValueError("Didn't get guidance strength for guidance distilled model.")
-        vec = vec + self.guidance_in(timestep_embedding(guidance, 256).to(img.dtype))
-
-    vec = vec + self.vector_in(y[:,:self.params.vec_in_dim])
+            guidance = torch.zeros_like(timesteps)
+        distil_guidance = timestep_embedding(guidance.detach().clone(), 16).to(img.device, img.dtype)
+        
+        # get all modulation index
+        modulation_index = timestep_embedding(torch.arange(mod_index_length, device=img.device), 32).to(img.device, img.dtype)
+        # broadcast the modulation index
+        modulation_index = modulation_index.unsqueeze(0).repeat(img.shape[0], 1, 1).to(img.device, img.dtype)
+        # broadcast timestep and guidance
+        timestep_guidance = torch.cat([distill_timestep, distil_guidance], dim=1).unsqueeze(1).repeat(1, mod_index_length, 1).to(img.dtype).to(img.device, img.dtype)
+        # concatenate
+        input_vec = torch.cat([timestep_guidance, modulation_index], dim=-1).to(img.device, img.dtype)
+        mod_vectors = self.distilled_guidance_layer(input_vec)
+    else:
+        # Standard Flux model: use time_in, guidance_in, and vector_in
+        vec = self.time_in(timestep_embedding(timesteps, 256).to(img.dtype))
+        if self.params.guidance_embed:
+            if guidance is None:
+                raise ValueError("Didn't get guidance strength for guidance distilled model.")
+            vec = vec + self.guidance_in(timestep_embedding(guidance, 256).to(img.dtype))
+        vec = vec + self.vector_in(y[:,:self.params.vec_in_dim])
+    
     txt = self.txt_in(txt)
 
     ids = torch.cat((txt_ids, img_ids), dim=1)
@@ -78,6 +108,19 @@ def forward_orig_ipa(
 
     blocks_replace = patches_replace.get("dit", {})
     for i, block in enumerate(self.double_blocks):
+        # Check if we should skip this block (Chroma models only)
+        if is_chroma and hasattr(self, 'skip_mmdit') and i in self.skip_mmdit:
+            continue
+            
+        # Prepare vec for this block based on model type
+        if is_chroma:
+            # For Chroma: extract modulations for this specific block
+            double_mod = (
+                self.get_modulations(mod_vectors, "double_img", idx=i),
+                self.get_modulations(mod_vectors, "double_txt", idx=i),
+            )
+            vec = double_mod
+        # else vec is already set for standard Flux models
         if ("double_block", i) in blocks_replace:
             def block_wrap(args):
                 out = {}
@@ -97,7 +140,7 @@ def forward_orig_ipa(
 
         if control is not None: # Controlnet
             control_i = control.get("input")
-            if i < len(control_i):
+            if control_i is not None and i < len(control_i):
                 add = control_i[i]
                 if add is not None:
                     img += add
@@ -105,6 +148,16 @@ def forward_orig_ipa(
     img = torch.cat((txt, img), 1)
 
     for i, block in enumerate(self.single_blocks):
+        # Check if we should skip this block (Chroma models only)
+        if is_chroma and hasattr(self, 'skip_dit') and i in self.skip_dit:
+            continue
+            
+        # Prepare vec for this block based on model type
+        if is_chroma:
+            # For Chroma: extract modulations for this specific single block
+            single_mod = self.get_modulations(mod_vectors, "single", idx=i)
+            vec = single_mod
+        # else vec is already set for standard Flux models
         if ("single_block", i) in blocks_replace:
             def block_wrap(args):
                 out = {}
@@ -124,12 +177,19 @@ def forward_orig_ipa(
 
         if control is not None: # Controlnet
             control_o = control.get("output")
-            if i < len(control_o):
+            if control_o is not None and i < len(control_o):
                 add = control_o[i]
                 if add is not None:
                     img[:, txt.shape[1] :, ...] += add
 
     img = img[:, txt.shape[1] :, ...]
 
-    img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
+    # Prepare vec for final layer based on model type
+    if is_chroma:
+        # For Chroma: extract final modulations
+        if hasattr(self, "final_layer"):
+            final_mod = self.get_modulations(mod_vectors, "final")
+            img = self.final_layer(img, vec=final_mod)  # (N, T, patch_size ** 2 * out_channels)
+    else:
+        img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
     return img

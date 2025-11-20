@@ -40,7 +40,7 @@ class MLPProjModelAdvanced(torch.nn.Module):
 
 class InstantXFluxIPAdapterModelAdvanced:
     def __init__(self, image_encoder_path, ip_ckpt, device, num_tokens=4):
-        self.device = device
+        self.device = torch.device(device) if isinstance(device, str) else device
         self.image_encoder_path = image_encoder_path
         self.ip_ckpt = ip_ckpt
         self.num_tokens = num_tokens
@@ -116,11 +116,18 @@ class InstantXFluxIPAdapterModelAdvanced:
         if pil_image is not None:
             if isinstance(pil_image, Image.Image):
                 pil_image = [pil_image]
+            # Ensure encoder is on the correct device (it may have been offloaded to CPU)
+            if self.image_encoder.device != self.device:
+                self.image_encoder.to(self.device)
             clip_image = self.clip_image_processor(images=pil_image, return_tensors="pt").pixel_values
             clip_image_embeds = self.image_encoder(clip_image.to(self.device, dtype=self.image_encoder.dtype)).pooler_output
             clip_image_embeds = clip_image_embeds.to(dtype=torch.float16)
         else:
             clip_image_embeds = clip_image_embeds.to(self.device, dtype=torch.float16)
+        # Ensure projection model is on the correct device
+        proj_device = next(self.image_proj_model.parameters()).device
+        if proj_device != self.device:
+            self.image_proj_model.to(self.device)
         image_prompt_embeds = self.image_proj_model(clip_image_embeds)
         return image_prompt_embeds
 
@@ -155,7 +162,8 @@ class ApplyIPAdapterFluxAdvanced:
                 "weight_end": ("FLOAT", {"default": 1.0, "min": -1.0, "max": 5.0, "step": 0.05 }),
                 "steps": ("INT", {"default": 10, "min": 1, "max": 100, "step": 1}),
                 "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001})
+                "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "offload_preprocessing": ("BOOLEAN", {"default": True, "label_on": "enabled", "label_off": "disabled"})
             },
         }
 
@@ -163,7 +171,7 @@ class ApplyIPAdapterFluxAdvanced:
     FUNCTION = "apply_ipadapter_flux_advanced"
     CATEGORY = "InstantXNodes"
 
-    def apply_ipadapter_flux_advanced(self, model, ipadapter_flux, image, weight_start, weight_end, steps, start_percent, end_percent):
+    def apply_ipadapter_flux_advanced(self, model, ipadapter_flux, image, weight_start, weight_end, steps, start_percent, end_percent, offload_preprocessing=True):
         # Clean up old processors if they exist
         if hasattr(model.model, '_ip_attn_procs'):
             for proc in model.model._ip_attn_procs.values():
@@ -186,6 +194,81 @@ class ApplyIPAdapterFluxAdvanced:
         
         # Store reference to processors for cleanup
         bi.model._ip_attn_procs = ipadapter_flux.ip_attn_procs
+        
+        # Note: We don't register image_encoder and image_proj_model with ModelPatcher
+        # because they have read-only device properties and aren't compatible with ComfyUI's
+        # automatic memory management. We handle them manually via offloading below.
+        # Only the attention processors are registered since they're standard torch modules.
+        
+        # Register attention processors with memory management
+        try:
+            from comfy.model_patcher import ModelPatcher
+            additional_models = []
+            
+            # Only wrap attention processors (57 modules: 19 double + 38 single blocks)
+            # These are standard PyTorch modules that work with ModelPatcher
+            if hasattr(ipadapter_flux, 'ip_attn_procs') and ipadapter_flux.ip_attn_procs:
+                # Get device from first attention processor
+                first_attn_proc = next(iter(ipadapter_flux.ip_attn_procs.values()))
+                attn_device = next(first_attn_proc.parameters()).device
+                # Wrap all attention processors in a ModuleList for tracking
+                ip_layers = torch.nn.ModuleList(ipadapter_flux.ip_attn_procs.values())
+                attn_patcher = ModelPatcher(ip_layers, attn_device, torch.device("cpu"))
+                additional_models.append(attn_patcher)
+            
+            # Register with the model
+            if additional_models:
+                bi.set_additional_models("ipadapter_flux_advanced", additional_models)
+        except Exception as e:
+            import traceback
+            logging.warning(f"IPAdapter-FluxChroma Advanced: Could not register attention processors: {e}")
+            logging.debug(traceback.format_exc())
+        
+        # Manually offload preprocessing models to CPU now that embeddings are generated
+        # These are only needed during image encoding, not during inference
+        # This saves ~1.2GB VRAM (image_encoder ~1.1GB + image_proj_model ~0.1GB)
+        if offload_preprocessing:
+            try:
+                offloaded_count = 0
+                if hasattr(ipadapter_flux.image_encoder, 'cpu'):
+                    original_device = ipadapter_flux.image_encoder.device
+                    ipadapter_flux.image_encoder.to('cpu')
+                    offloaded_count += 1
+                    logging.info(f"IPAdapter-FluxChroma Advanced: Offloaded SiglipVisionModel from {original_device} to CPU (~1.1GB VRAM freed)")
+                if hasattr(ipadapter_flux.image_proj_model, 'cpu'):
+                    original_device = next(ipadapter_flux.image_proj_model.parameters()).device
+                    ipadapter_flux.image_proj_model.to('cpu')
+                    offloaded_count += 1
+                    logging.info(f"IPAdapter-FluxChroma Advanced: Offloaded projection model from {original_device} to CPU (~0.1GB VRAM freed)")
+                # Clear CUDA cache to immediately reclaim memory
+                if offloaded_count > 0 and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as e:
+                import traceback
+                logging.warning(f"IPAdapter-FluxChroma Advanced: Could not offload preprocessing models: {e}")
+                logging.debug(traceback.format_exc())
+        else:
+            # Move models back to GPU if they were previously offloaded
+            try:
+                moved_count = 0
+                if hasattr(ipadapter_flux.image_encoder, 'to'):
+                    current_device = ipadapter_flux.image_encoder.device
+                    if current_device.type == 'cpu':
+                        target_device = model.load_device
+                        ipadapter_flux.image_encoder.to(target_device)
+                        moved_count += 1
+                        logging.info(f"IPAdapter-FluxChroma Advanced: Moved SiglipVisionModel from CPU back to {target_device}")
+                if hasattr(ipadapter_flux.image_proj_model, 'to'):
+                    current_device = next(ipadapter_flux.image_proj_model.parameters()).device
+                    if current_device.type == 'cpu':
+                        target_device = model.load_device
+                        ipadapter_flux.image_proj_model.to(target_device)
+                        moved_count += 1
+                        logging.info(f"IPAdapter-FluxChroma Advanced: Moved projection model from CPU back to {target_device}")
+            except Exception as e:
+                import traceback
+                logging.warning(f"IPAdapter-FluxChroma Advanced: Could not move preprocessing models back to GPU: {e}")
+                logging.debug(traceback.format_exc())
         
         return (bi,)
 

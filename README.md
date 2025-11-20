@@ -1,5 +1,38 @@
 # ComfyUI-IPAdapter-Flux
 
+## 🚀 FluxChroma Fork
+
+**This is a fork with Chroma compatibility, various compatibility fixes, and enhanced memory management.**
+
+### Key Improvements
+
+**✅ Intelligent Model Offloading** (~1.2GB VRAM savings)
+- Preprocessing models (SiglipVisionModel ~1.1GB, projection model ~0.1GB) automatically offload to CPU after generating embeddings
+- Only attention processors stay in VRAM during inference
+- Toggle via `offload_preprocessing` parameter (enabled by default)
+
+**✅ ComfyUI Memory Integration**
+- Attention processors now properly registered with ComfyUI's ModelPatcher system
+
+**✅ Device Management**
+- Automatic GPU/CPU movement when toggling offloading on/off
+- Smart detection and handling of model device states
+
+**✅ Robust Cleanup**
+- Fixed WeakSet KeyError during model unloading
+- Clean shutdown without exception spam
+
+**When to disable offloading:**
+- Workflows that reuse IPAdapter multiple times per run
+- Systems with abundant VRAM (>48GB)
+- Debugging/testing scenarios
+
+### Technical Details
+
+./documentation folder includes detailed description of the bigger changes
+
+---
+
 [阅读中文版](./README_zh.md)
 
 <div align="center">

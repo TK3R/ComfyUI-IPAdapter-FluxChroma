@@ -259,6 +259,6 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "IPAdapterFluxChromaLoader": "Load IPAdapter Flux Model (Chroma)",
-    "ApplyIPAdapterFluxChroma": "Apply IPAdapter Flux Model (Chroma)",
+    "IPAdapterFluxChromaLoader": "Load IPAdapter Flux/Chroma Model",
+    "ApplyIPAdapterFluxChroma": "Apply IPAdapter Flux/Chroma Model",
 }

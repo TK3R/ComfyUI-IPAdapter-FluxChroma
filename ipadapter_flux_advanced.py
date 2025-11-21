@@ -183,6 +183,19 @@ class ApplyIPAdapterFluxChromaAdvanced:
         
         IPAFluxAttnProcessor2_0Advanced.reset_all_instances()
         
+        # Ensure attention processors are on correct device (they may have been offloaded by ComfyUI)
+        # This prevents "Expected all tensors to be on the same device" errors on subsequent runs
+        target_device = model.load_device
+        if hasattr(ipadapter_flux, 'ip_attn_procs') and ipadapter_flux.ip_attn_procs:
+            attn_procs_moved = 0
+            for proc in ipadapter_flux.ip_attn_procs.values():
+                proc_device = next(proc.parameters()).device
+                if proc_device.type == 'cpu' and target_device.type == 'cuda':
+                    proc.to(target_device)
+                    attn_procs_moved += 1
+            if attn_procs_moved > 0:
+                logging.info(f"IPAdapter-FluxChroma Advanced: Moved {attn_procs_moved} attention processors from CPU back to {target_device}")
+        
         ipadapter_flux.update_ip_adapter_advanced(model.model, (weight_start, weight_end, steps), (start_percent, end_percent))
         
         image_prompt_embeds = ipadapter_flux.get_image_embeds(

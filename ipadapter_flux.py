@@ -165,6 +165,20 @@ class ApplyIPAdapterFluxChroma:
         # convert image to pillow
         pil_image = image.numpy()[0] * 255.0
         pil_image = Image.fromarray(pil_image.astype(np.uint8))
+        
+        # Ensure attention processors are on correct device (they may have been offloaded by ComfyUI)
+        # This prevents "Expected all tensors to be on the same device" errors on subsequent runs
+        target_device = model.load_device
+        if hasattr(ipadapter_flux, 'ip_attn_procs') and ipadapter_flux.ip_attn_procs:
+            attn_procs_moved = 0
+            for proc in ipadapter_flux.ip_attn_procs.values():
+                proc_device = next(proc.parameters()).device
+                if proc_device.type == 'cpu' and target_device.type == 'cuda':
+                    proc.to(target_device)
+                    attn_procs_moved += 1
+            if attn_procs_moved > 0:
+                logging.info(f"IPAdapter-FluxChroma: Moved {attn_procs_moved} attention processors from CPU back to {target_device}")
+        
         # initialize ipadapter
         ipadapter_flux.update_ip_adapter(model.model, weight, (start_percent, end_percent))
         # process control image 

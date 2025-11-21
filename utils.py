@@ -79,9 +79,20 @@ def forward_orig_ipa(
         mod_index_length = 344
         distill_timestep = timestep_embedding(timesteps.detach().clone(), 16).to(img.device, img.dtype)
         
+        # Handle guidance - it might be a dict, tensor, or None
         if guidance is None:
-            guidance = torch.zeros_like(timesteps)
-        distil_guidance = timestep_embedding(guidance.detach().clone(), 16).to(img.device, img.dtype)
+            guidance_tensor = torch.zeros_like(timesteps)
+        elif isinstance(guidance, dict):
+            # If guidance is a dict, try to extract a tensor value or use zeros
+            guidance_tensor = guidance.get('guidance', torch.zeros_like(timesteps))
+            if not isinstance(guidance_tensor, torch.Tensor):
+                guidance_tensor = torch.zeros_like(timesteps)
+        elif isinstance(guidance, torch.Tensor):
+            guidance_tensor = guidance
+        else:
+            guidance_tensor = torch.zeros_like(timesteps)
+        
+        distil_guidance = timestep_embedding(guidance_tensor.detach().clone(), 16).to(img.device, img.dtype)
         
         # get all modulation index
         modulation_index = timestep_embedding(torch.arange(mod_index_length, device=img.device), 32).to(img.device, img.dtype)
@@ -96,9 +107,19 @@ def forward_orig_ipa(
         # Standard Flux model: use time_in, guidance_in, and vector_in
         vec = self.time_in(timestep_embedding(timesteps, 256).to(img.dtype))
         if self.params.guidance_embed:
+            # Handle guidance - it might be a dict, tensor, or None
             if guidance is None:
                 raise ValueError("Didn't get guidance strength for guidance distilled model.")
-            vec = vec + self.guidance_in(timestep_embedding(guidance, 256).to(img.dtype))
+            elif isinstance(guidance, dict):
+                # If guidance is a dict, try to extract a tensor value
+                guidance_tensor = guidance.get('guidance', None)
+                if guidance_tensor is None or not isinstance(guidance_tensor, torch.Tensor):
+                    raise ValueError("Guidance is a dict but doesn't contain a valid 'guidance' tensor.")
+                vec = vec + self.guidance_in(timestep_embedding(guidance_tensor, 256).to(img.dtype))
+            elif isinstance(guidance, torch.Tensor):
+                vec = vec + self.guidance_in(timestep_embedding(guidance, 256).to(img.dtype))
+            else:
+                raise ValueError(f"Guidance must be a Tensor or dict, got {type(guidance)}")
         vec = vec + self.vector_in(y[:,:self.params.vec_in_dim])
     
     txt = self.txt_in(txt)

@@ -34,6 +34,16 @@ class IPAFluxAttnProcessor2_0(nn.Module):
         if self.timestep_range is not None:
             if t[0] > self.timestep_range[0] or t[0] < self.timestep_range[1]:
                 return None
+        
+        # Ensure projection layers are on the correct device
+        # This is critical when models are partially offloaded (lowvram mode)
+        target_device = image_emb.device
+        if self.to_k_ip.weight.device != target_device:
+            self.to_k_ip = self.to_k_ip.to(target_device)
+            self.to_v_ip = self.to_v_ip.to(target_device)
+            self.norm_added_k = self.norm_added_k.to(target_device)
+            self.norm_added_v = self.norm_added_v.to(target_device)
+            
         # `ip-adapter` projections
         ip_hidden_states = image_emb
         ip_hidden_states_key_proj = self.to_k_ip(ip_hidden_states)

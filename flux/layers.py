@@ -97,12 +97,15 @@ class DoubleStreamBlockIPA(nn.Module):
             
             txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
 
+        # Normalize by number of adapters to prevent brightness accumulation
+        num_adapters = len(self.ip_adapter)
         for adapter, image in zip(self.ip_adapter, self.image_emb):
             # this does a separate attention for each adapter
             ip_hidden_states = adapter(self.num_heads, img_q, image, t)
             if ip_hidden_states is not None:
                 ip_hidden_states = ip_hidden_states.to(self.device)
-                img_attn = img_attn + ip_hidden_states
+                # Scale down by number of adapters to maintain consistent brightness
+                img_attn = img_attn + ip_hidden_states / num_adapters
 
         # calculate the img bloks
         if self.is_chroma:
@@ -190,13 +193,16 @@ class SingleStreamBlockIPA(nn.Module):
         # compute attention
         attn = attention(q, k, v, pe=pe, mask=attn_mask)
 
+        # Normalize by number of adapters to prevent brightness accumulation
+        num_adapters = len(self.ip_adapter)
         for adapter, image in zip(self.ip_adapter, self.image_emb):
             # this does a separate attention for each adapter
             # maybe we want a single joint attention call for all adapters?
             ip_hidden_states = adapter(self.num_heads, q, image, t)
             if ip_hidden_states is not None:
                 ip_hidden_states = ip_hidden_states.to(self.device)
-                attn = attn + ip_hidden_states
+                # Scale down by number of adapters to maintain consistent brightness
+                attn = attn + ip_hidden_states / num_adapters
 
         # compute activation in mlp stream, cat again and run second linear layer
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))

@@ -32,7 +32,6 @@
 ./documentation folder includes detailed description of the bigger changes
 
 ### INSTALLATION
-IF YOU HAVE THE ORIGINAL ComfyUI-IPAdapter-Flux REMOVE IT FIRST
 
 Installation is the same as the original
 

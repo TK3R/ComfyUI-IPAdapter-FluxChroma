@@ -165,6 +165,27 @@ def forward_orig_ipa(
                 add = control_i[i]
                 if add is not None:
                     img += add
+        
+        # PuLID support: Check if PuLID data exists and apply it
+        if hasattr(self, 'pulid_data') and self.pulid_data:
+            if hasattr(self, 'pulid_double_interval') and i % self.pulid_double_interval == 0:
+                # Calculate which PuLID attention module to use
+                pulid_ca_idx = i // self.pulid_double_interval
+                if hasattr(self, 'pulid_ca') and pulid_ca_idx < len(self.pulid_ca):
+                    device = img.device
+                    for _, node_data in self.pulid_data.items():
+                        condition_start = node_data['sigma_start'] >= timesteps
+                        condition_end = timesteps >= node_data['sigma_end']
+                        condition = torch.logical_and(condition_start, condition_end).all()
+                        
+                        if condition:
+                            # Ensure dtype consistency for PuLID computation
+                            pulid_module = self.pulid_ca[pulid_ca_idx].to(device)
+                            module_dtype = next(pulid_module.parameters()).dtype
+                            embed_converted = node_data['embedding'].to(device, dtype=module_dtype)
+                            img_converted = img.to(device, dtype=module_dtype)
+                            pulid_out = pulid_module(embed_converted, img_converted)
+                            img = img + node_data['weight'] * pulid_out.to(img.dtype)
 
     img = torch.cat((txt, img), 1)
 
@@ -202,6 +223,34 @@ def forward_orig_ipa(
                 add = control_o[i]
                 if add is not None:
                     img[:, txt.shape[1] :, ...] += add
+        
+        # PuLID support: Check if PuLID data exists and apply it for single blocks
+        if hasattr(self, 'pulid_data') and self.pulid_data:
+            if hasattr(self, 'pulid_single_interval') and i % self.pulid_single_interval == 0:
+                # Calculate which PuLID attention module to use (offset by double blocks)
+                double_block_count = 19  # Standard Flux double block count
+                num_double_ca = (double_block_count + self.pulid_double_interval - 1) // self.pulid_double_interval
+                pulid_ca_idx = num_double_ca + (i // self.pulid_single_interval)
+                
+                if hasattr(self, 'pulid_ca') and pulid_ca_idx < len(self.pulid_ca):
+                    device = img.device
+                    # Extract just the img part from concatenated tensor
+                    txt_len = txt.shape[1] if 'txt' in locals() else 0
+                    img_only = img[:, txt_len:, ...]
+                    
+                    for _, node_data in self.pulid_data.items():
+                        condition_start = node_data['sigma_start'] >= timesteps
+                        condition_end = timesteps >= node_data['sigma_end']
+                        condition = torch.logical_and(condition_start, condition_end).all()
+                        
+                        if condition:
+                            # Ensure dtype consistency for PuLID computation
+                            pulid_module = self.pulid_ca[pulid_ca_idx].to(device)
+                            module_dtype = next(pulid_module.parameters()).dtype
+                            embed_converted = node_data['embedding'].to(device, dtype=module_dtype)
+                            img_converted = img_only.to(device, dtype=module_dtype)
+                            pulid_out = pulid_module(embed_converted, img_converted)
+                            img[:, txt_len:, ...] = img[:, txt_len:, ...] + node_data['weight'] * pulid_out.to(img_only.dtype)
 
     img = img[:, txt.shape[1] :, ...]
 

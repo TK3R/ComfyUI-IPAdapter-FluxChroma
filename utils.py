@@ -60,19 +60,50 @@ def forward_orig_ipa(
     txt: Tensor,
     txt_ids: Tensor,
     timesteps: Tensor,
-    y: Tensor,
-    guidance: Tensor|None = None,
-    control=None,
-    transformer_options={},
-    attn_mask: Tensor = None,
+    y_or_guidance: Tensor = None,  # y for Flux, guidance for Chroma
+    guidance_or_control = None,    # guidance for Flux, control for Chroma
+    control_or_transformer_options = None,  # control for Flux, transformer_options for Chroma
+    transformer_options_or_attn_mask = None,  # transformer_options for Flux, attn_mask for Chroma
+    attn_mask: Tensor = None,  # Only used by Flux
 ) -> Tensor:
+    # Check if this is a Chroma model (has distilled_guidance_layer instead of time_in)
+    is_chroma = hasattr(self, 'distilled_guidance_layer') and not hasattr(self, 'time_in')
+    
+    # Chroma and Flux have different signatures:
+    # Chroma: forward_orig(self, img, img_ids, txt, txt_ids, timesteps, guidance, control, transformer_options, attn_mask)
+    # Flux:   forward_orig(self, img, img_ids, txt, txt_ids, timesteps, y, guidance, control, transformer_options, attn_mask)
+    # So we need to remap the arguments based on model type
+    if is_chroma:
+        # For Chroma: y_or_guidance is actually guidance, guidance_or_control is control, etc.
+        guidance = y_or_guidance
+        control = guidance_or_control
+        # Handle transformer_options - it could be a dict or None
+        if isinstance(control_or_transformer_options, dict):
+            transformer_options = control_or_transformer_options
+        else:
+            transformer_options = {}
+        # Handle attn_mask
+        if transformer_options_or_attn_mask is not None and not isinstance(transformer_options_or_attn_mask, dict):
+            attn_mask = transformer_options_or_attn_mask
+        y = None
+    else:
+        # For Flux: arguments are in the expected order
+        y = y_or_guidance
+        guidance = guidance_or_control
+        control = control_or_transformer_options
+        if isinstance(transformer_options_or_attn_mask, dict):
+            transformer_options = transformer_options_or_attn_mask
+        else:
+            transformer_options = {}
+        # attn_mask stays as is
+        # Handle y=None case for Flux (same as original Flux code)
+        if y is None:
+            y = torch.zeros((img.shape[0], self.params.vec_in_dim), device=img.device, dtype=img.dtype)
+    
     patches_replace = transformer_options.get("patches_replace", {})
     
     # running on sequences img
     img = self.img_in(img)
-    
-    # Check if this is a Chroma model (has distilled_guidance_layer instead of time_in)
-    is_chroma = hasattr(self, 'distilled_guidance_layer') and not hasattr(self, 'time_in')
     
     if is_chroma:
         # Chroma model: use distilled guidance layer
@@ -146,25 +177,29 @@ def forward_orig_ipa(
             def block_wrap(args):
                 out = {}
                 if isinstance(block, DoubleStreamBlockIPA): # ipadaper 
-                    out["img"], out["txt"] = block(img=args["img"], txt=args["txt"], vec=args["vec"], pe=args["pe"], t=args["timesteps"], attn_mask=args.get("attn_mask"))
+                    out["img"], out["txt"] = block(img=args["img"], txt=args["txt"], vec=args["vec"], pe=args["pe"], t=args["timesteps"], attn_mask=args.get("attn_mask"), transformer_options=args.get("transformer_options", {}))
                 else:
-                    out["img"], out["txt"] = block(img=args["img"], txt=args["txt"], vec=args["vec"], pe=args["pe"], attn_mask=args.get("attn_mask"))
+                    out["img"], out["txt"] = block(img=args["img"], txt=args["txt"], vec=args["vec"], pe=args["pe"], attn_mask=args.get("attn_mask"), transformer_options=args.get("transformer_options", {}))
                 return out
-            out = blocks_replace[("double_block", i)]({"img": img, "txt": txt, "vec": vec, "pe": pe, "timesteps": timesteps, "attn_mask": attn_mask}, {"original_block": block_wrap,"transformer_options": transformer_options})
+            out = blocks_replace[("double_block", i)]({"img": img, "txt": txt, "vec": vec, "pe": pe, "timesteps": timesteps, "attn_mask": attn_mask, "transformer_options": transformer_options}, {"original_block": block_wrap,"transformer_options": transformer_options})
             txt = out["txt"]
             img = out["img"]
         else:
             if isinstance(block, DoubleStreamBlockIPA): # ipadaper 
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, t=timesteps, attn_mask=attn_mask)
+                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, t=timesteps, attn_mask=attn_mask, transformer_options=transformer_options)
             else:
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, attn_mask=attn_mask)
+                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, attn_mask=attn_mask, transformer_options=transformer_options)
 
         if control is not None: # Controlnet
             control_i = control.get("input")
             if control_i is not None and i < len(control_i):
                 add = control_i[i]
                 if add is not None:
-                    img += add
+                    # Chroma uses simple addition, Flux uses slicing
+                    if is_chroma:
+                        img += add
+                    else:
+                        img[:, :add.shape[1]] += add
         
         # PuLID support: Check if PuLID data exists and apply it
         if hasattr(self, 'pulid_data') and self.pulid_data:
@@ -188,6 +223,7 @@ def forward_orig_ipa(
                             img = img + node_data['weight'] * pulid_out.to(img.dtype)
 
     img = torch.cat((txt, img), 1)
+    txt_token_length = txt.shape[1]
 
     for i, block in enumerate(self.single_blocks):
         # Check if we should skip this block (Chroma models only)
@@ -204,25 +240,26 @@ def forward_orig_ipa(
             def block_wrap(args):
                 out = {}
                 if isinstance(block, SingleStreamBlockIPA): # ipadaper
-                    out["img"] = block(args["img"], vec=args["vec"], pe=args["pe"], t=args["timesteps"], attn_mask=args.get("attn_mask"))
+                    out["img"] = block(args["img"], vec=args["vec"], pe=args["pe"], t=args["timesteps"], attn_mask=args.get("attn_mask"), transformer_options=args.get("transformer_options", {}))
                 else:
-                    out["img"] = block(args["img"], vec=args["vec"], pe=args["pe"], attn_mask=args.get("attn_mask"))
+                    out["img"] = block(args["img"], vec=args["vec"], pe=args["pe"], attn_mask=args.get("attn_mask"), transformer_options=args.get("transformer_options", {}))
                 return out
 
-            out = blocks_replace[("single_block", i)]({"img": img, "vec": vec, "pe": pe, "timesteps": timesteps, "attn_mask": attn_mask}, {"original_block": block_wrap, "transformer_options": transformer_options})
+            out = blocks_replace[("single_block", i)]({"img": img, "vec": vec, "pe": pe, "timesteps": timesteps, "attn_mask": attn_mask, "transformer_options": transformer_options}, {"original_block": block_wrap, "transformer_options": transformer_options})
             img = out["img"]
         else:
             if isinstance(block, SingleStreamBlockIPA): # ipadaper
-                img = block(img, vec=vec, pe=pe, t=timesteps, attn_mask=attn_mask)
+                img = block(img, vec=vec, pe=pe, t=timesteps, attn_mask=attn_mask, transformer_options=transformer_options)
             else:
-                img = block(img, vec=vec, pe=pe, attn_mask=attn_mask)
+                img = block(img, vec=vec, pe=pe, attn_mask=attn_mask, transformer_options=transformer_options)
 
         if control is not None: # Controlnet
             control_o = control.get("output")
             if control_o is not None and i < len(control_o):
                 add = control_o[i]
                 if add is not None:
-                    img[:, txt.shape[1] :, ...] += add
+                    # Both Chroma and Flux use img[:, txt.shape[1]:, ...] += add for single blocks
+                    img[:, txt_token_length:, ...] += add
         
         # PuLID support: Check if PuLID data exists and apply it for single blocks
         if hasattr(self, 'pulid_data') and self.pulid_data:

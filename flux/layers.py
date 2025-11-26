@@ -50,7 +50,7 @@ class DoubleStreamBlockIPA(nn.Module):
         self.ip_adapter.append(ip_adapter)
         self.image_emb.append(image_emb)
     
-    def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, t: Tensor, attn_mask=None):
+    def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, t: Tensor, attn_mask=None, transformer_options={}):
         # Handle modulation for both standard Flux and Chroma models
         if self.is_chroma:
             # Chroma model: vec is already unpacked modulation values
@@ -85,7 +85,7 @@ class DoubleStreamBlockIPA(nn.Module):
             attn = attention(torch.cat((img_q, txt_q), dim=2),
                              torch.cat((img_k, txt_k), dim=2),
                              torch.cat((img_v, txt_v), dim=2),
-                             pe=pe, mask=attn_mask)
+                             pe=pe, mask=attn_mask, transformer_options=transformer_options)
 
             img_attn, txt_attn = attn[:, : img.shape[1]], attn[:, img.shape[1]:]           
         else:
@@ -93,7 +93,7 @@ class DoubleStreamBlockIPA(nn.Module):
             attn = attention(torch.cat((txt_q, img_q), dim=2),
                             torch.cat((txt_k, img_k), dim=2),
                             torch.cat((txt_v, img_v), dim=2),
-                            pe=pe, mask=attn_mask)
+                            pe=pe, mask=attn_mask, transformer_options=transformer_options)
             
             txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
 
@@ -109,19 +109,21 @@ class DoubleStreamBlockIPA(nn.Module):
 
         # calculate the img bloks
         if self.is_chroma:
-            img.addcmul_(img_mod1.gate, self.img_attn.proj(img_attn))
-            img.addcmul_(img_mod2.gate, self.img_mlp(torch.addcmul(img_mod2.shift, 1 + img_mod2.scale, self.img_norm2(img))))
+            # Use non-in-place operations to preserve tensor state for ControlNet
+            img = img + img_mod1.gate * self.img_attn.proj(img_attn)
+            img = img + img_mod2.gate * self.img_mlp(torch.addcmul(img_mod2.shift, 1 + img_mod2.scale, self.img_norm2(img)))
         else:
             img = img + img_mod1.gate * self.img_attn.proj(img_attn)
             img = img + img_mod2.gate * self.img_mlp((1 + img_mod2.scale) * self.img_norm2(img) + img_mod2.shift)
 
         # calculate the txt bloks
         if self.is_chroma:
-            txt.addcmul_(txt_mod1.gate, self.txt_attn.proj(txt_attn))
-            txt.addcmul_(txt_mod2.gate, self.txt_mlp(torch.addcmul(txt_mod2.shift, 1 + txt_mod2.scale, self.txt_norm2(txt))))
+            # Use non-in-place operations to preserve tensor state for ControlNet
+            txt = txt + txt_mod1.gate * self.txt_attn.proj(txt_attn)
+            txt = txt + txt_mod2.gate * self.txt_mlp(torch.addcmul(txt_mod2.shift, 1 + txt_mod2.scale, self.txt_norm2(txt)))
         else:
-            txt += txt_mod1.gate * self.txt_attn.proj(txt_attn)
-            txt += txt_mod2.gate * self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift)
+            txt = txt + txt_mod1.gate * self.txt_attn.proj(txt_attn)
+            txt = txt + txt_mod2.gate * self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift)
 
         if txt.dtype == torch.float16:
             txt = torch.nan_to_num(txt, nan=0.0, posinf=65504, neginf=-65504)
@@ -172,7 +174,7 @@ class SingleStreamBlockIPA(nn.Module):
         self.ip_adapter.append(ip_adapter)
         self.image_emb.append(image_emb)
 
-    def forward(self, x: Tensor, vec: Tensor, pe: Tensor, t:Tensor, attn_mask=None) -> Tensor:
+    def forward(self, x: Tensor, vec: Tensor, pe: Tensor, t:Tensor, attn_mask=None, transformer_options={}) -> Tensor:
         # Handle modulation for both standard Flux and Chroma models
         if self.is_chroma:
             # Chroma model: vec is already the modulation values
@@ -191,7 +193,7 @@ class SingleStreamBlockIPA(nn.Module):
         q, k = self.norm(q, k, v)
 
         # compute attention
-        attn = attention(q, k, v, pe=pe, mask=attn_mask)
+        attn = attention(q, k, v, pe=pe, mask=attn_mask, transformer_options=transformer_options)
 
         # Normalize by number of adapters to prevent brightness accumulation
         num_adapters = len(self.ip_adapter)
@@ -207,9 +209,10 @@ class SingleStreamBlockIPA(nn.Module):
         # compute activation in mlp stream, cat again and run second linear layer
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
         if self.is_chroma:
-            x.addcmul_(mod.gate, output)
+            # Use non-in-place operation to preserve tensor state for ControlNet
+            x = x + mod.gate * output
         else:
-            x += mod.gate * output
+            x = x + mod.gate * output
         if x.dtype == torch.float16:
             x = torch.nan_to_num(x, nan=0.0, posinf=65504, neginf=-65504)
         return x
